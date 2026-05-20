@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(\"C:/Users/Elpco/AppData/Local/Android/Sdk/emulator/emulator.exe\" -list-avds)",
+      "Bash(java -version)",
+      "PowerShell(Test-Path *)",
+      "PowerShell(& \"C:\\\\Users\\\\Elpco\\\\AppData\\\\Local\\\\Android\\\\Sdk\\\\emulator\\\\emulator.exe\" -list-avds)",
+      "PowerShell($env:ANDROID_HOME = \"C:\\\\Users\\\\Elpco\\\\AppData\\\\Local\\\\Android\\\\Sdk\"; $env:JAVA_HOME = \"D:\\\\Program Files\\\\Android\\\\Android Studio\\\\jbr\"; $env:Path = \"$env:JAVA_HOME\\\\bin;$env:ANDROID_HOME\\\\platform-tools;$env:Path\"; Start-Process -FilePath \"$env:ANDROID_HOME\\\\emulator\\\\emulator.exe\" -ArgumentList \"-avd\",\"Pixel_6\" -WindowStyle Normal; Write-Output \"EMULATOR_LAUNCHED\")",
+      "PowerShell(Tee-Object *)",
+      "PowerShell($adb = \"C:\\\\Users\\\\Elpco\\\\AppData\\\\Local\\\\Android\\\\Sdk\\\\platform-tools\\\\adb.exe\"; & $adb devices; Write-Output \"---\"; & $adb wait-for-device; $boot = \\(& $adb shell getprop sys.boot_completed 2>$null\\); Write-Output \"BOOT=$boot\")",
+      "PowerShell($adb = \"C:\\\\Users\\\\Elpco\\\\AppData\\\\Local\\\\Android\\\\Sdk\\\\platform-tools\\\\adb.exe\"; & $adb install -r \"D:\\\\blephone\\\\blephone\\\\app\\\\build\\\\outputs\\\\apk\\\\debug\\\\app-debug.apk\"; Write-Output \"---\"; & $adb shell am start -n com.blephone/.MainActivity)",
+      "PowerShell($env:ANDROID_HOME = \"C:\\\\Users\\\\Elpco\\\\AppData\\\\Local\\\\Android\\\\Sdk\"; $env:JAVA_HOME = \"D:\\\\Program Files\\\\Android\\\\Android Studio\\\\jbr\"; $env:Path = \"$env:JAVA_HOME\\\\bin;$env:Path\"; Set-Location \"D:\\\\blephone\\\\blephone\"; .\\\\gradlew.bat installDebug 2>&1 | Select-Object -Last 30)",
+      "PowerShell(& \"C:\\\\Users\\\\Elpco\\\\AppData\\\\Local\\\\Android\\\\Sdk\\\\platform-tools\\\\adb.exe\" shell am start -n com.blephone/.MainActivity)",
+      "PowerShell($env:ANDROID_HOME = \"C:\\\\Users\\\\Elpco\\\\AppData\\\\Local\\\\Android\\\\Sdk\"; $env:JAVA_HOME = \"D:\\\\Program Files\\\\Android\\\\Android Studio\\\\jbr\"; $env:Path = \"$env:JAVA_HOME\\\\bin;$env:Path\"; Set-Location \"D:\\\\blephone\\\\blephone\"; .\\\\gradlew.bat installDebug 2>&1 | Select-Object -Last 8)",
+      "PowerShell($adb = \"C:\\\\Users\\\\Elpco\\\\AppData\\\\Local\\\\Android\\\\Sdk\\\\platform-tools\\\\adb.exe\"; & $adb shell am force-stop com.blephone; & $adb shell am start -n com.blephone/.MainActivity)",
+      "PowerShell($env:ANDROID_HOME = \"C:\\\\Users\\\\Elpco\\\\AppData\\\\Local\\\\Android\\\\Sdk\"; $env:JAVA_HOME = \"D:\\\\Program Files\\\\Android\\\\Android Studio\\\\jbr\"; $env:Path = \"$env:JAVA_HOME\\\\bin;$env:Path\"; Set-Location \"D:\\\\blephone\\\\blephone\"; .\\\\gradlew.bat installDebug 2>&1 | Select-Object -Last 25)",
+      "PowerShell($env:ANDROID_HOME = \"C:\\\\Users\\\\Elpco\\\\AppData\\\\Local\\\\Android\\\\Sdk\"; $env:JAVA_HOME = \"D:\\\\Program Files\\\\Android\\\\Android Studio\\\\jbr\"; $env:Path = \"$env:JAVA_HOME\\\\bin;$env:Path\"; Set-Location \"D:\\\\blephone\\\\blephone\"; .\\\\gradlew.bat installDebug 2>&1 | Select-Object -Last 5; & \"C:\\\\Users\\\\Elpco\\\\AppData\\\\Local\\\\Android\\\\Sdk\\\\platform-tools\\\\adb.exe\" shell am force-stop com.blephone; & \"C:\\\\Users\\\\Elpco\\\\AppData\\\\Local\\\\Android\\\\Sdk\\\\platform-tools\\\\adb.exe\" shell am start -n com.blephone/.MainActivity)"
+    ]
+  }
+}

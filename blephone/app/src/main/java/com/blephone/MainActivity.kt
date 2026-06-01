@@ -147,8 +147,12 @@ class MainViewModel : ViewModel() {
     var bleMessage by mutableStateOf("目标设备 DDXD_BLUE · FFF1 Notify")
     var scannedDevices by mutableStateOf(emptyList<BleScanDevice>())
     var bleLogs by mutableStateOf(listOf("等待连接"))
+    var calibrationMessage by mutableStateOf("未校准")
 
     private var bleClient: PressureBleClient? = null
+    private var rawSensorValues: List<Int>? = null
+    private var pressureBaseline: List<Int> = List(16) { 0 }
+    private var autoCalibrationPending = true
     private var step = 0
 
     fun toggleBleConnection(context: Context) {
@@ -173,7 +177,13 @@ class MainViewModel : ViewModel() {
         bleClient?.disconnect()
         bleClient = PressureBleClient(
             context = appContext,
-            onState = { state -> connectionState = state },
+            onState = { state ->
+                connectionState = state
+                if (state == ConnectionState.CONNECTED) {
+                    autoCalibrationPending = true
+                    calibrationMessage = "等待首帧自动校准"
+                }
+            },
             onFrame = ::applySensorValues,
             onDevice = ::upsertScannedDevice,
             onMessage = { message ->
@@ -192,6 +202,7 @@ class MainViewModel : ViewModel() {
         bleClient = null
         connectionState = ConnectionState.DISCONNECTED
         bleMessage = "已断开"
+        autoCalibrationPending = true
         addBleLog("手动断开")
     }
 
@@ -219,6 +230,16 @@ class MainViewModel : ViewModel() {
 
     fun setSelectedPoint(id: Int) {
         selectedPointId = id
+    }
+
+    fun calibrateCurrentPressure() {
+        val raw = rawSensorValues
+        if (raw == null || raw.size != points.size) {
+            calibrationMessage = "无传感器数据，无法校准"
+            addBleLog("校准失败：无传感器数据")
+            return
+        }
+        applyCalibration(raw, automatic = false)
     }
 
     fun tick() {
@@ -337,10 +358,23 @@ class MainViewModel : ViewModel() {
 
     private fun applySensorValues(values: List<Int>) {
         if (values.size != points.size) return
+        rawSensorValues = values
+        if (autoCalibrationPending) {
+            applyCalibration(values, automatic = true)
+            autoCalibrationPending = false
+        }
         points = points.mapIndexed { index, point ->
-            val normalized = ((values[index].coerceIn(0, 255) / 255f) * 100f).roundToInt()
+            val adjusted = (values[index] - pressureBaseline[index]).coerceIn(0, 255)
+            val normalized = ((adjusted / 255f) * 100f).roundToInt()
             point.copy(force = normalized.coerceIn(0, 100))
         }
+    }
+
+    private fun applyCalibration(values: List<Int>, automatic: Boolean) {
+        pressureBaseline = values.map { it.coerceIn(0, 255) }
+        points = points.map { point -> point.copy(force = 0) }
+        calibrationMessage = if (automatic) "已自动校准为 0" else "已手动校准为 0"
+        addBleLog(calibrationMessage)
     }
 
     private fun upsertScannedDevice(device: BleScanDevice) {
@@ -419,7 +453,14 @@ fun BlePhoneApp(vm: MainViewModel) {
             selectedId = vm.selectedPointId,
             onPointClick = vm::setSelectedPoint
         )
-        SummaryCard(maxValue, avgValue, contacts, selected)
+        SummaryCard(
+            maxValue = maxValue,
+            avgValue = avgValue,
+            contacts = contacts,
+            selected = selected,
+            calibrationMessage = vm.calibrationMessage,
+            onCalibrateClick = vm::calibrateCurrentPressure
+        )
     }
 }
 
@@ -719,8 +760,8 @@ fun FootCard(
 
                     points.forEach { pt ->
                         if (pt.force < 4) return@forEach
-                        val cx = footLeft + (1f - pt.x) * footW
-                        val cy = footTop + (1f - pt.y) * footH
+                        val cx = footLeft + pt.x * footW
+                        val cy = footTop + pt.y * footH
                         val radius = footW * (0.22f + pt.force / 100f * 0.40f)
                         val color = forceToColor(pt.force)
                         val centerAlpha = (0.35f + pt.force / 100f * 0.55f).coerceIn(0f, 0.95f)
@@ -770,8 +811,8 @@ fun FootCard(
                 val selected = pt.id == selectedId
                 val markerOuter = if (selected) markerSize + 6.dp else markerSize
                 val markerOuterPx = with(density) { markerOuter.toPx() }
-                val cxPx = footLeft + (1f - pt.x) * footW
-                val cyPx = footTop + (1f - pt.y) * footH
+                val cxPx = footLeft + pt.x * footW
+                val cyPx = footTop + pt.y * footH
                 val offX = with(density) { (cxPx - markerOuterPx / 2f).toDp() }
                 val offY = with(density) { (cyPx - markerOuterPx / 2f).toDp() }
                 SensorMarker(
@@ -823,7 +864,14 @@ private fun SensorMarker(
 }
 
 @Composable
-fun SummaryCard(maxValue: Int, avgValue: Int, contacts: Int, selected: PressurePoint) {
+fun SummaryCard(
+    maxValue: Int,
+    avgValue: Int,
+    contacts: Int,
+    selected: PressurePoint,
+    calibrationMessage: String,
+    onCalibrateClick: () -> Unit
+) {
     PanelCard {
         Column(
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
@@ -873,6 +921,31 @@ fun SummaryCard(maxValue: Int, avgValue: Int, contacts: Int, selected: PressureP
                     text = "   ${forceLabel(selected.force)}",
                     color = TextSecondary,
                     fontSize = 12.sp
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Button(
+                    onClick = onCalibrateClick,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Accent,
+                        contentColor = Color.White
+                    ),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text(
+                        text = "校准",
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                Text(
+                    text = calibrationMessage,
+                    color = TextSecondary,
+                    fontSize = 12.sp,
+                    modifier = Modifier.weight(1f)
                 )
             }
         }

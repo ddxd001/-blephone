@@ -54,10 +54,15 @@ Write-Host "==> Check connected devices"
 $deviceLines = & $AdbBin devices | Select-Object -Skip 1 | Where-Object { $_ -match "device$" }
 if ($deviceLines.Count -eq 0) {
     Write-Host "==> No device detected, starting emulator: $AvdName"
-    Start-Process -FilePath $EmulatorBin -ArgumentList "-avd",$AvdName
+    Start-Process -FilePath $EmulatorBin -ArgumentList "-avd",$AvdName,"-no-snapshot-load"
     Write-Host "==> Waiting for emulator boot..."
     & $AdbBin wait-for-device
+    $bootDeadline = (Get-Date).AddMinutes(3)
     while ((& $AdbBin shell getprop sys.boot_completed 2>$null).Trim() -ne "1") {
+        if ((Get-Date) -gt $bootDeadline) {
+            Write-Host "==> Emulator boot timed out. The emulator window may still be starting."
+            exit 1
+        }
         Start-Sleep -Seconds 2
     }
 }

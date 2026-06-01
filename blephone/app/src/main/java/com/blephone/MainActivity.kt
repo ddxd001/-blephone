@@ -1,13 +1,18 @@
 package com.blephone
 
+import android.content.Context
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -19,6 +24,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -30,7 +36,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,6 +52,8 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.imageResource
 import androidx.compose.ui.text.font.FontWeight
@@ -57,7 +64,6 @@ import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewmodel.compose.viewModel
-import kotlinx.coroutines.delay
 import kotlin.random.Random
 
 // ===== Theme (light) =====
@@ -138,15 +144,72 @@ class MainViewModel : ViewModel() {
     var mode by mutableStateOf(MockMode.STAND)
     var selectedPointId by mutableStateOf(1)
     var points by mutableStateOf(defaultPoints())
+    var bleMessage by mutableStateOf("目标设备 DDXD_BLUE · FFF1 Notify")
+    var scannedDevices by mutableStateOf(emptyList<BleScanDevice>())
+    var bleLogs by mutableStateOf(listOf("等待连接"))
 
+    private var bleClient: PressureBleClient? = null
     private var step = 0
 
-    fun mockConnect() {
-        if (connectionState == ConnectionState.CONNECTED) {
+    fun toggleBleConnection(context: Context) {
+        if (connectionState == ConnectionState.CONNECTED ||
+            connectionState == ConnectionState.SCANNING ||
+            connectionState == ConnectionState.CONNECTING
+        ) {
+            disconnectBle()
+            return
+        }
+        connectBle(context)
+    }
+
+    fun connectBle(context: Context) {
+        val appContext = context.applicationContext
+        if (!BleRuntimePermissions.hasRequiredPermissions(appContext)) {
+            bleMessage = "需要蓝牙权限"
             connectionState = ConnectionState.DISCONNECTED
             return
         }
-        connectionState = ConnectionState.SCANNING
+
+        bleClient?.disconnect()
+        bleClient = PressureBleClient(
+            context = appContext,
+            onState = { state -> connectionState = state },
+            onFrame = ::applySensorValues,
+            onDevice = ::upsertScannedDevice,
+            onMessage = { message ->
+                bleMessage = message
+                addBleLog(message)
+            }
+        ).also { client ->
+            scannedDevices = emptyList()
+            addBleLog("开始扫描 DDXD_BLUE")
+            client.connect()
+        }
+    }
+
+    fun disconnectBle() {
+        bleClient?.disconnect()
+        bleClient = null
+        connectionState = ConnectionState.DISCONNECTED
+        bleMessage = "已断开"
+        addBleLog("手动断开")
+    }
+
+    fun onPermissionDenied() {
+        bleMessage = "蓝牙权限被拒绝"
+        connectionState = ConnectionState.DISCONNECTED
+        addBleLog("蓝牙权限被拒绝")
+    }
+
+    fun connectScannedDevice(address: String) {
+        val client = bleClient
+        if (client == null) {
+            bleMessage = "请先点击连接开始扫描"
+            addBleLog("没有正在运行的扫描")
+            return
+        }
+        addBleLog("手动连接 $address")
+        client.connectTo(address)
     }
 
     fun updateMode(newMode: MockMode) {
@@ -271,14 +334,65 @@ class MainViewModel : ViewModel() {
 
     private fun List<Int>.withNoise(noise: Int): List<Int> =
         map { (it + Random.nextInt(-noise, noise + 1)).coerceIn(0, 100) }
+
+    private fun applySensorValues(values: List<Int>) {
+        if (values.size != points.size) return
+        points = points.mapIndexed { index, point ->
+            val normalized = ((values[index].coerceIn(0, 255) / 255f) * 100f).roundToInt()
+            point.copy(force = normalized.coerceIn(0, 100))
+        }
+    }
+
+    private fun upsertScannedDevice(device: BleScanDevice) {
+        val updated = scannedDevices
+            .filterNot { it.address == device.address }
+            .plus(device)
+            .sortedWith(compareByDescending<BleScanDevice> { it.isTarget }.thenByDescending { it.rssi })
+            .take(8)
+        scannedDevices = updated
+        if (device.isTarget) {
+            addBleLog("发现目标 ${device.name} ${device.address}")
+        }
+    }
+
+    private fun addBleLog(message: String) {
+        bleLogs = (listOf(message) + bleLogs).take(6)
+    }
+
+    override fun onCleared() {
+        bleClient?.disconnect()
+        super.onCleared()
+    }
 }
 
 @Composable
 fun BlePhoneApp(vm: MainViewModel) {
-    LaunchedEffect(Unit) {
-        while (true) {
-            vm.tick()
-            delay(100)
+    val context = LocalContext.current
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        val granted = BleRuntimePermissions.requiredPermissions().all { permission ->
+            grants[permission] == true
+        }
+        if (granted) {
+            vm.connectBle(context)
+        } else {
+            vm.onPermissionDenied()
+        }
+    }
+
+    fun handleConnectClick() {
+        if (vm.connectionState == ConnectionState.CONNECTED ||
+            vm.connectionState == ConnectionState.SCANNING ||
+            vm.connectionState == ConnectionState.CONNECTING
+        ) {
+            vm.disconnectBle()
+            return
+        }
+        if (BleRuntimePermissions.hasRequiredPermissions(context)) {
+            vm.connectBle(context)
+        } else {
+            permissionLauncher.launch(BleRuntimePermissions.requiredPermissions())
         }
     }
 
@@ -288,12 +402,18 @@ fun BlePhoneApp(vm: MainViewModel) {
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         HeaderBar()
-        StatusCard(vm.connectionState, vm::mockConnect)
-        ModeCard(vm.mode, vm::updateMode)
+        StatusCard(vm.connectionState, ::handleConnectClick)
+        DeviceCard(
+            message = vm.bleMessage,
+            devices = vm.scannedDevices,
+            logs = vm.bleLogs,
+            onDeviceClick = vm::connectScannedDevice
+        )
         FootCard(
             points = vm.points,
             selectedId = vm.selectedPointId,
@@ -389,6 +509,124 @@ fun StatusCard(state: ConnectionState, onConnectClick: () -> Unit) {
 }
 
 @Composable
+fun DeviceCard(
+    message: String,
+    devices: List<BleScanDevice>,
+    logs: List<String>,
+    onDeviceClick: (String) -> Unit
+) {
+    PanelCard {
+        Column(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                "BLE 设备",
+                color = TextDim,
+                fontSize = 11.sp,
+                letterSpacing = 1.5.sp,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                text = message,
+                color = TextSecondary,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                ProtocolChip("DDXD_BLUE")
+                ProtocolChip("FFF0")
+                ProtocolChip("FFF1 Notify")
+            }
+            Text(
+                "扫描设备",
+                color = TextDim,
+                fontSize = 10.sp,
+                letterSpacing = 1.sp,
+                fontWeight = FontWeight.Medium
+            )
+            if (devices.isEmpty()) {
+                Text(
+                    text = "点击连接后显示附近 BLE 设备",
+                    color = TextDim,
+                    fontSize = 12.sp
+                )
+            } else {
+                devices.take(4).forEach { device ->
+                    ScanDeviceRow(device, onDeviceClick)
+                }
+            }
+            Text(
+                "连接日志",
+                color = TextDim,
+                fontSize = 10.sp,
+                letterSpacing = 1.sp,
+                fontWeight = FontWeight.Medium
+            )
+            logs.take(4).forEach { log ->
+                Text(
+                    text = log,
+                    color = TextSecondary,
+                    fontSize = 11.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ScanDeviceRow(device: BleScanDevice, onClick: (String) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (device.isTarget) AccentDim else ChipBg)
+            .clickable { onClick(device.address) }
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = device.name,
+                color = TextPrimary,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = device.address,
+                color = TextSecondary,
+                fontSize = 10.sp
+            )
+        }
+        Text(
+            text = "${device.rssi} dBm",
+            color = if (device.isTarget) Accent else TextDim,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.widthIn(min = 52.dp)
+        )
+    }
+}
+
+@Composable
+private fun ProtocolChip(text: String) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(ChipBg)
+            .padding(horizontal = 10.dp, vertical = 7.dp)
+    ) {
+        Text(
+            text = text,
+            color = TextSecondary,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+    }
+}
+
+@Composable
 fun ModeCard(current: MockMode, onChange: (MockMode) -> Unit) {
     PanelCard {
         Column(
@@ -451,6 +689,7 @@ fun FootCard(
             val dst = IntOffset(footLeft.roundToInt(), footTop.roundToInt())
             val dstSize = IntSize(footW.roundToInt(), footH.roundToInt())
             val footRect = Rect(footLeft, footTop, footLeft + footW, footTop + footH)
+            val footCenter = Offset(footLeft + footW / 2f, footTop + footH / 2f)
 
             Canvas(modifier = Modifier.fillMaxSize()) {
                 // Subtle grid background
@@ -465,12 +704,14 @@ fun FootCard(
                 }
 
                 // 1) Foot interior body (very light skin color)
-                drawImage(
-                    image = fillImg,
-                    dstOffset = dst,
-                    dstSize = dstSize,
-                    colorFilter = ColorFilter.tint(FootInterior)
-                )
+                rotate(degrees = 180f, pivot = footCenter) {
+                    drawImage(
+                        image = fillImg,
+                        dstOffset = dst,
+                        dstSize = dstSize,
+                        colorFilter = ColorFilter.tint(FootInterior)
+                    )
+                }
 
                 // 2) Heatmap on its own layer, clipped to the foot fill via DstIn mask
                 drawIntoCanvas { canvas ->
@@ -478,8 +719,8 @@ fun FootCard(
 
                     points.forEach { pt ->
                         if (pt.force < 4) return@forEach
-                        val cx = footLeft + pt.x * footW
-                        val cy = footTop + pt.y * footH
+                        val cx = footLeft + (1f - pt.x) * footW
+                        val cy = footTop + (1f - pt.y) * footH
                         val radius = footW * (0.22f + pt.force / 100f * 0.40f)
                         val color = forceToColor(pt.force)
                         val centerAlpha = (0.35f + pt.force / 100f * 0.55f).coerceIn(0f, 0.95f)
@@ -500,36 +741,42 @@ fun FootCard(
                     }
 
                     // Mask: keep only what overlaps the foot fill alpha
-                    drawImage(
-                        image = fillImg,
-                        dstOffset = dst,
-                        dstSize = dstSize,
-                        blendMode = BlendMode.DstIn
-                    )
+                    rotate(degrees = 180f, pivot = footCenter) {
+                        drawImage(
+                            image = fillImg,
+                            dstOffset = dst,
+                            dstSize = dstSize,
+                            blendMode = BlendMode.DstIn
+                        )
+                    }
 
                     canvas.restore()
                 }
 
                 // 3) Foot outline on top, dark stroke
-                drawImage(
-                    image = outlineImg,
-                    dstOffset = dst,
-                    dstSize = dstSize,
-                    colorFilter = ColorFilter.tint(OutlineColor)
-                )
+                rotate(degrees = 180f, pivot = footCenter) {
+                    drawImage(
+                        image = outlineImg,
+                        dstOffset = dst,
+                        dstSize = dstSize,
+                        colorFilter = ColorFilter.tint(OutlineColor)
+                    )
+                }
             }
 
             // Sensor markers (clickable, IDs visible)
-            val markerSize = 14.dp
-            val markerSizePx = with(density) { markerSize.toPx() }
+            val markerSize = 22.dp
             points.forEach { pt ->
-                val cxPx = footLeft + pt.x * footW
-                val cyPx = footTop + pt.y * footH
-                val offX = with(density) { (cxPx - markerSizePx / 2f).toDp() }
-                val offY = with(density) { (cyPx - markerSizePx / 2f).toDp() }
+                val selected = pt.id == selectedId
+                val markerOuter = if (selected) markerSize + 6.dp else markerSize
+                val markerOuterPx = with(density) { markerOuter.toPx() }
+                val cxPx = footLeft + (1f - pt.x) * footW
+                val cyPx = footTop + (1f - pt.y) * footH
+                val offX = with(density) { (cxPx - markerOuterPx / 2f).toDp() }
+                val offY = with(density) { (cyPx - markerOuterPx / 2f).toDp() }
                 SensorMarker(
                     id = pt.id,
-                    selected = pt.id == selectedId,
+                    selected = selected,
                     size = markerSize,
                     modifier = Modifier
                         .align(Alignment.TopStart)
@@ -549,18 +796,18 @@ private fun SensorMarker(
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
-    val outer = if (selected) size + 8.dp else size
+    val outer = if (selected) size + 6.dp else size
     Box(
         modifier = modifier
             .size(outer)
+            .clip(CircleShape)
+            .background(
+                color = if (selected) Accent else Color.White,
+                shape = CircleShape
+            )
             .border(
                 width = if (selected) 2.dp else 1.dp,
                 color = if (selected) Accent else Color(0x66334155),
-                shape = CircleShape
-            )
-            .padding(if (selected) 3.dp else 2.dp)
-            .background(
-                color = if (selected) Accent else Color(0xFFFFFFFF),
                 shape = CircleShape
             )
             .clickable { onClick() },
@@ -569,7 +816,7 @@ private fun SensorMarker(
         Text(
             "$id",
             color = if (selected) Color.White else OutlineColor,
-            fontSize = 8.sp,
+            fontSize = 11.sp,
             fontWeight = FontWeight.Bold
         )
     }
